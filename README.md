@@ -1,4 +1,12 @@
-# Heron
+# Heron for Compute
+This version of Heron has been modified to work with Rhino Compute. New features include the following: 
+- Added HeadlessDoc component to enable user to create and set units of a new headless doc.
+- Added Set Headless EAP component to set Earth Anchor Point of headless doc if it exists.
+- Modified Convert.cs file to check if a headless doc exists, and if so uses it instead of the Rhino Active Doc.
+- Modified ImportOSM such that any reference to a rhino headless or active doc has to go through Convert first.
+- Increased the RestOSM component timeout to 600 to help prevent gateway timeout on large context requests.
+#
+
 Heron is a Grasshopper add-on which enables the import and export of GIS data into the Rhino 3d/Grasshopper environment, located, scaled and cropped based on Rhino's EarthAnchorPoint and a clipping polygon.  Heron is built on GDAL libraries and can import many GIS vector, raster and topographic file types, export vector GIS data and consume GIS REST services over the web.
 
 The add-on includes components in five categories.
