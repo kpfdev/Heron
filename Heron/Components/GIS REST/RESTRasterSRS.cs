@@ -4,6 +4,7 @@ using Grasshopper.Kernel.Special;
 using Grasshopper.Kernel.Types;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Rhino.Commands;
 using Rhino.Geometry;
 using System;
 using System.Collections.Generic;
@@ -47,6 +48,13 @@ namespace Heron
 
         }
 
+        private string Prefix { get; set; }
+        private string FolderPath { get; set; }
+        public Rectangle3d ImageRectangle { get; set; }
+
+        public string ResolutionErrorMessage = "Try smaller resolution";
+
+
         protected override void SolveInstance(IGH_DataAccess DA)
         {
             List<Curve> boundary = new List<Curve>();
@@ -58,9 +66,12 @@ namespace Heron
             string folderPath = string.Empty;
             DA.GetData<string>("Target Folder", ref folderPath);
             if (!folderPath.EndsWith(@"\")) { folderPath = folderPath + @"\"; }
+            FolderPath = folderPath;
 
             string prefix = string.Empty;
             DA.GetData<string>("Prefix", ref prefix);
+
+            Prefix = prefix;
 
             string URL = string.Empty;
             DA.GetData<string>("REST URL", ref URL);
@@ -98,124 +109,55 @@ namespace Heron
             Transform userSRSToModelTransform = Heron.Convert.GetUserSRSToHeronSRSTransform(heronSRS);
             Transform heronToUserSRSTransform = Heron.Convert.GetHeronSRSToUserSRSTransform(heronSRS);
 
-
+            ImageRectangle = new Rectangle3d();
             GH_Structure<GH_String> mapList = new GH_Structure<GH_String>();
             GH_Structure<GH_String> mapquery = new GH_Structure<GH_String>();
             GH_Structure<GH_Rectangle> imgFrame = new GH_Structure<GH_Rectangle>();
 
+            int[] smallerResolutions = new int[] {1700, 1200};
+
             FileInfo file = new FileInfo(folderPath);
             file.Directory.Create();
 
-            string size = string.Empty;
-            if (Res > 0)
-            {
-                size = "&size=" + Res + "%2C" + Res;
-            }
-
             for (int i = 0; i < boundary.Count; i++)
             {
-
                 GH_Path path = new GH_Path(i);
 
-                ///Get image frame for given boundary
                 BoundingBox imageBox = boundary[i].GetBoundingBox(false);
                 imageBox.Transform(heronToUserSRSTransform);
 
-                double proportion = imageBox.Diagonal.X / imageBox.Diagonal.Y;
-                if (proportion > 1) { size = "&size=" + Res + "%2C" + Res / proportion; }
-                else { size = "&size=" + Res * proportion + "%2C" + Res; }
+                var request = RequestBody(URL, imageBox, Res, heronSRSInt, imageType);
 
-                ///Make sure to have a rect for output
-                Rectangle3d rect = new Rectangle3d();
-
-                ///Query the REST service
-                string restquery = URL +
-                  ///legacy method for creating bounding box string
-                  "bbox=" + imageBox.Min.X + "%2C" + imageBox.Min.Y + "%2C" + imageBox.Max.X + "%2C" + imageBox.Max.Y +
-                  "&bboxSR=" + heronSRSInt +
-                  size + //"&layers=&layerdefs=" +
-                  "&imageSR=" + heronSRSInt + //"&transparent=false&dpi=&time=&layerTimeOptions=" +
-                  "&format=" + imageType;
-                string restqueryJSON = restquery + "&f=json";
-                string restqueryImage = restquery + "&f=image";
-
-                mapquery.Append(new GH_String(restqueryImage), path);
 
                 string result = string.Empty;
-                string imageTypeShort = imageType;
+
+                ///Clean up file name for png32 png16 png8 geotiff tiff
+                string imageTypeShort = CleanupImageTypeName(imageType);
+                string imageFullPath = $"{FolderPath}{Prefix}_{i}.{imageTypeShort}";
 
                 if (run)
                 {
-                    ///Get extent of image from arcgis rest service as JSON
                     try
                     {
-                        result = Heron.Convert.HttpToJson(restqueryJSON);
+                        result = DownLoadImage(request, imageFullPath);
 
-                        JObject jObj = JsonConvert.DeserializeObject<JObject>(result);
-                        if (!jObj.ContainsKey("href"))
+                        if (result == ResolutionErrorMessage)
                         {
-                            restqueryJSON = restqueryJSON.Replace("export?", "exportImage?");
-                            restqueryImage = restqueryImage.Replace("export?", "exportImage?");
-                            mapquery.RemovePath(path);
-                            mapquery.Append(new GH_String(restqueryImage), path);
-                            result = Heron.Convert.HttpToJson(restqueryJSON);
-                            jObj = JsonConvert.DeserializeObject<JObject>(result);
-                        }
-
-                        if (jObj["extent"] != null)
-                        {
-                            Point3d extMin = new Point3d((double)jObj["extent"]["xmin"], (double)jObj["extent"]["ymin"], 0);
-                            Point3d extMax = new Point3d((double)jObj["extent"]["xmax"], (double)jObj["extent"]["ymax"], 0);
-                            rect = new Rectangle3d(Plane.WorldXY, extMin, extMax);
-                            rect.Transform(userSRSToModelTransform);
-                        }
-
-                        ///Download image from source
-                        ///Catch if JSON query throws an error
-                        string imageQueryJSON = "";
-                        if (jObj["href"] != null)
-                        {
-                            imageQueryJSON = jObj["href"].ToString();
-                        }
-
-                        ///Clean up file name for png32 png16 png8 geotiff tiff
-
-                        if (imageTypeShort.EndsWith("32")) { imageTypeShort = imageTypeShort.Remove(imageTypeShort.LastIndexOf("32")); }
-                        if (imageTypeShort.EndsWith("16")) { imageTypeShort = imageTypeShort.Remove(imageTypeShort.LastIndexOf("16")); }
-                        if (imageTypeShort.EndsWith("8")) { imageTypeShort = imageTypeShort.Remove(imageTypeShort.LastIndexOf("8")); }
-                        if (imageTypeShort.EndsWith("geotiff", true, null))
-                        {
-                            imageTypeShort = imageTypeShort.Remove(imageTypeShort.LastIndexOf("geotiff"));
-                            imageTypeShort = imageTypeShort + "tif";
-                        }
-                        if (imageTypeShort.EndsWith("tiff", true, null))
-                        {
-                            imageTypeShort = imageTypeShort.Remove(imageTypeShort.LastIndexOf("tiff"));
-                            imageTypeShort = imageTypeShort + "tif";
-                        }
-
-                        ///If the image link from the JSON response doesn't work, fallback to the original image REST query
-                        ///Replaces the WebClient process from original RESTRaster component with HttpWebResponse
-                        string imageDownloaded = "";
-
-                        if (!String.IsNullOrEmpty(imageQueryJSON))
-                        {
-                            imageDownloaded = Heron.Convert.DownloadHttpImage(imageQueryJSON, folderPath + prefix + "_" + i + "." + imageTypeShort);
-                            if (!String.IsNullOrEmpty(imageDownloaded))
+                            request = RequestBody(URL, imageBox, smallerResolutions[0], heronSRSInt, imageType);
+                            result = DownLoadImage(request, imageFullPath);
+                            if (result == ResolutionErrorMessage)
                             {
-                                imageDownloaded = Heron.Convert.DownloadHttpImage(restqueryImage, folderPath + prefix + "_" + i + "." + imageTypeShort);
+                                request = RequestBody(URL, imageBox, smallerResolutions[1], heronSRSInt, imageType);
+                                result = DownLoadImage(request, imageFullPath);
+
+                                if (result == ResolutionErrorMessage)
+                                {
+                                    AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "Failed to download image.");
+                                    DA.SetDataTree(2, mapquery);
+                                    return;
+                                }
                             }
                         }
-                        else
-                        {
-                            imageDownloaded = Heron.Convert.DownloadHttpImage(restqueryImage, folderPath + prefix + "_" + i + "." + imageTypeShort);
-                        }
-
-                        if (!String.IsNullOrEmpty(imageDownloaded))
-                        {
-                            AddRuntimeMessage(GH_RuntimeMessageLevel.Error, imageDownloaded);
-                        }
-
                     }
                     catch (Exception e)
                     {
@@ -224,17 +166,19 @@ namespace Heron
                         return;
                     }
 
+                    mapList.Append(new GH_String(imageFullPath), path);
 
-                    var bitmapPath = folderPath + prefix + "_" + i + "." + imageTypeShort;
-                    mapList.Append(new GH_String(bitmapPath), path);
-
-                    if (rect.IsValid)
+                    ImageRectangle.Transform(userSRSToModelTransform);
+                    if (ImageRectangle.IsValid)
                     {
-                        imgFrame.Append(new GH_Rectangle(rect), path);
-                        AddPreviewItem(bitmapPath, rect);
+                        imgFrame.Append(new GH_Rectangle(ImageRectangle), path);
+                        AddPreviewItem(imageFullPath, ImageRectangle);
                     }
                 }
+
+                mapquery.Append(new GH_String($"{request}&f=image"), path);
             }
+
 
             DA.SetDataTree(0, mapList);
             DA.SetDataTree(1, imgFrame);
@@ -242,7 +186,168 @@ namespace Heron
 
         }
 
+        /// <summary>
+        /// Request and save image.
+        /// </summary>
+        /// <param name="requestBody"></param>
+        /// <param name="path"></param>
+        /// <param name="transform"></param>
+        /// <param name="imageFileType"></param>
+        /// <param name="index"></param>
+        /// <returns></returns>
+        private string DownLoadImage(string requestBody, string filePath)
+        {
+            string restqueryJSON = $"{requestBody}&f=json";
+            string restqueryImage = $"{requestBody}&f=image";
 
+            var result = String.Empty;
+
+            // Get extent of image from arcgis rest service as JSON
+            result = Heron.Convert.HttpToJson(restqueryJSON);
+
+            JObject jObj = JsonConvert.DeserializeObject<JObject>(result);
+            if (!jObj.ContainsKey("href"))
+            {
+                restqueryJSON = restqueryJSON.Replace("export?", "exportImage?");
+                restqueryImage = restqueryImage.Replace("export?", "exportImage?");
+                result = Heron.Convert.HttpToJson(restqueryJSON);
+                jObj = JsonConvert.DeserializeObject<JObject>(result);
+            }
+
+            if (jObj["extent"] != null)
+            {
+                Point3d extMin = new Point3d((double)jObj["extent"]["xmin"], (double)jObj["extent"]["ymin"], 0);
+                Point3d extMax = new Point3d((double)jObj["extent"]["xmax"], (double)jObj["extent"]["ymax"], 0);
+                ImageRectangle = new Rectangle3d(Plane.WorldXY, extMin, extMax);
+            }
+
+            string imageQueryJSON = "";
+            if (jObj["href"] != null)
+            {
+                imageQueryJSON = jObj["href"].ToString();
+            }
+
+
+
+            string imageDownloadResponse = String.Empty;
+
+            // Try link from JSON and fall back to the original REST query if not successful
+            if (!String.IsNullOrEmpty(imageQueryJSON))
+            {
+                imageDownloadResponse = Heron.Convert.DownloadHttpImage(imageQueryJSON, filePath);
+                if (!String.IsNullOrEmpty(imageDownloadResponse))
+                {
+                    imageDownloadResponse = Heron.Convert.DownloadHttpImage(restqueryImage, filePath);
+                }
+            }
+            else
+            {
+                imageDownloadResponse = Heron.Convert.DownloadHttpImage(restqueryImage, filePath);
+            }
+
+            // Failed to downdload image, suggest smaller resolution
+            if (!String.IsNullOrEmpty(imageDownloadResponse))
+            {
+                imageDownloadResponse = ResolutionErrorMessage;
+            }
+
+            return imageDownloadResponse;
+        }
+
+
+        /// <summary>
+        /// Cleanup image file type naming
+        /// </summary>
+        /// <param name="imageTypeName"></param>
+        /// <returns></returns>
+        private string CleanupImageTypeName(string imageTypeName)
+        {
+            if (imageTypeName.EndsWith("32"))
+            {
+                imageTypeName = imageTypeName.Remove(imageTypeName.LastIndexOf("32"));
+            }
+
+            if (imageTypeName.EndsWith("16"))
+            {
+                imageTypeName = imageTypeName.Remove(imageTypeName.LastIndexOf("16"));
+            }
+
+            if (imageTypeName.EndsWith("8"))
+            {
+                imageTypeName = imageTypeName.Remove(imageTypeName.LastIndexOf("8"));
+            }
+            if (imageTypeName.EndsWith("geotiff", true, null))
+            {
+                imageTypeName = imageTypeName.Remove(imageTypeName.LastIndexOf("geotiff"));
+                imageTypeName = imageTypeName + "tif";
+            }
+            if (imageTypeName.EndsWith("tiff", true, null))
+            {
+                imageTypeName = imageTypeName.Remove(imageTypeName.LastIndexOf("tiff"));
+                imageTypeName = imageTypeName + "tif";
+            }
+
+            return imageTypeName;
+        }
+
+        /// <summary>
+        /// Build a image size part of the web request.
+        /// </summary>
+        /// <param name="res"></param>
+        /// <param name="boundingBox"></param>
+        /// <returns></returns>
+        private string ProcessImageSizeBody(int res, BoundingBox boundingBox)
+        {
+            double ratio = boundingBox.Diagonal.X / boundingBox.Diagonal.Y;
+
+            var size = ratio > 1 ? ImageSizeBody(res, res / ratio) : ImageSizeBody(res * ratio, res);
+            return size;
+        }
+
+        private string ImageSizeBody(double x, double y)
+        {
+            return $"&size={x}%2C{y}";
+        }
+
+        /// <summary>
+        /// Build a part of the request body describing bounding box.
+        /// </summary>
+        /// <param name="boundingBox"></param>
+        /// <returns></returns>
+        private string BoundingBoxRequestString(BoundingBox boundingBox)
+        {
+            var min = boundingBox.Min;
+            var max = boundingBox.Max;
+            string body = $"bbox={min.X}%2C{min.Y}%2C{max.X}%2C{max.Y}";
+            return body;
+        }
+
+        /// <summary>
+        /// Build a string request body for the image query.
+        /// </summary>
+        /// <param name="url"></param> main url
+        /// <param name="bbox"></param> bounding box for the image
+        /// <param name="resolution"></param>
+        /// <param name="heronSRS"></param>
+        /// <param name="imageType"></param> file type
+        /// <returns></returns>
+        private string RequestBody(string url, BoundingBox bbox, int resolution, int heronSRS, string imageType)
+        {
+            var boundingBoxBody = BoundingBoxRequestString(bbox);
+            var imageSizeBody = ProcessImageSizeBody(resolution, bbox);
+
+            const string bboxSRName = "&bboxSR=";
+            var bboxSrBody = $"{bboxSRName}{heronSRS}";
+
+            const string imageSrName = "&imageSR=";
+            var imageBody = $"{imageSrName}{heronSRS}";
+
+            const string formatName = "&format=";
+            var imageTypeBody = $"{formatName}{imageType}";
+
+            string request = $"{url}{boundingBoxBody}{bboxSrBody}{imageSizeBody}{imageBody}{imageTypeBody}";
+            return request;
+        }
 
 
         private JObject rasterJson = JObject.Parse(Heron.Convert.GetEnpoints());

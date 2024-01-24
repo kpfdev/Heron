@@ -264,7 +264,7 @@
     <Compile Include="Components\Utilities\HexToColor.cs" />
     <Compile Include="Components\Utilities\ColorToHex.cs" />
     <Compile Include="Convert.cs" />
-	<Compile Include="Components\GIS Tools\SetEAPHeadless.cs" />
+    <Compile Include="Components\GIS Tools\SetEAPHeadless.cs" />
     <Compile Include="Components\GIS Import-Export\ExportVector.cs" />
     <Compile Include="SpeckleAsync\WorkerInstance.cs" />
     <Content Include="appsettings.json">
@@ -279,7 +279,7 @@
     <Compile Include="Components\Utilities\ImageTopColors.cs" />
     <Compile Include="Components\Utilities\ImageRotate.cs" />
     <Compile Include="Components\Utilities\ImageFlip.cs" />
-	<Compile Include="Components\Utilities\HeadlessDoc.cs" />
+    <Compile Include="Components\Utilities\HeadlessDoc.cs" />
     <Compile Include="GdalConfiguration.cs" />
     <Compile Include="Components\GIS Tools\GdalOGR2OGR.cs" />
     <Compile Include="Components\GIS Tools\GdalWarp.cs" />
@@ -388,7 +388,7 @@
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup>
-    <PostBuildEvent>xcopy "$(TargetDir)" "C:\Program Files\Rhino 7\Plug-ins\Grasshopper\Components" /s /i /y</PostBuildEvent>
+    <PostBuildEvent>xcopy "$(TargetDir)" "C:\Users\jszychowska\AppData\Roaming\Grasshopper\Libraries" /s /i /y</PostBuildEvent>
   </PropertyGroup>
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
